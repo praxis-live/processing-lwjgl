@@ -36,7 +36,6 @@ import processing.core.PConstants;
 import processing.core.PGraphics;
 import processing.core.PImage;
 import processing.core.PSurface;
-import processing.event.Event;
 import processing.event.KeyEvent;
 import processing.event.MouseEvent;
 import processing.opengl.PGL;
@@ -46,6 +45,8 @@ import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
@@ -55,7 +56,8 @@ import static org.lwjgl.system.MemoryUtil.NULL;
 
 public class PSurfaceLWJGL implements PSurface {
 
-  private static final boolean DEBUG_GLFW = false;
+  private static final boolean DEBUG_GLFW = 
+          Boolean.getBoolean("processing.lwjgl.debug");
 
   @SuppressWarnings("FieldCanBeLocal")
   private GLDebugMessageCallback debugCallback;
@@ -63,6 +65,7 @@ public class PSurfaceLWJGL implements PSurface {
   private PApplet sketch;
   private final PGraphics graphics;
   private final PLWJGL pgl;
+  private final BlockingQueue<Runnable> tasks;
 
   /**
    * ScaledSketch instance which helps with DPI scaling tasks.
@@ -121,6 +124,7 @@ public class PSurfaceLWJGL implements PSurface {
   PSurfaceLWJGL(PGraphics graphics) {
     this.graphics = graphics;
     this.pgl = (PLWJGL) ((PGraphicsLWJGL) graphics).pgl;
+    this.tasks = new LinkedBlockingQueue<>();
   }
 
 
@@ -148,12 +152,17 @@ public class PSurfaceLWJGL implements PSurface {
 
   @Override
   public void initOffscreen(PApplet sketch) {
-    throw new AssertionError("This surface does not support offscreen rendering");
+    throw new UnsupportedOperationException("This surface does not support offscreen rendering");
   }
 
 
   @Override
   public void initFrame(PApplet sketch) {
+      
+    if (!PApplet.mainThread().isMainThread()) {
+        throw new IllegalStateException("initFrame not called on main thread");
+    }
+      
     this.sketch = sketch;
 
     if (!glfwInit()) {
@@ -177,8 +186,6 @@ public class PSurfaceLWJGL implements PSurface {
     initWindow();
     initInputListeners();
 
-    // Initialize framerate timer
-    Sync.initialise();
   }
 
 
@@ -190,22 +197,35 @@ public class PSurfaceLWJGL implements PSurface {
 
   @Override
   public void setTitle(String title) {
+      if (!PApplet.mainThread().isMainThread()) {
+          PApplet.mainThread().runLater(() -> setTitle(title));
+          return;
+      }
     glfwSetWindowTitle(window, title);
   }
 
 
   @Override
   public void setVisible(boolean visible) {
+      if (!PApplet.mainThread().isMainThread()) {
+          PApplet.mainThread().runLater(() -> setVisible(visible));
+          return;
+      }
     if (visible) {
       glfwShowWindow(window);
     } else {
       glfwHideWindow(window);
     }
+    glfwPollEvents();
   }
 
 
   @Override
   public void setResizable(boolean resizable) {
+      if (!PApplet.mainThread().isMainThread()) {
+          PApplet.mainThread().runLater(() -> setResizable(resizable));
+          return;
+      }
     int value = resizable ? GLFW_TRUE : GLFW_FALSE;
     glfwSetWindowAttrib(window, GLFW_RESIZABLE, value);
   }
@@ -213,6 +233,10 @@ public class PSurfaceLWJGL implements PSurface {
 
   @Override
   public void setAlwaysOnTop(boolean always) {
+      if (!PApplet.mainThread().isMainThread()) {
+          PApplet.mainThread().runLater(() -> setAlwaysOnTop(always));
+          return;
+      }
     int value = always ? GLFW_TRUE : GLFW_FALSE;
     glfwSetWindowAttrib(window, GLFW_FLOATING, value);
   }
@@ -449,7 +473,9 @@ public class PSurfaceLWJGL implements PSurface {
         if (width != 0 && height != 0 && !pgl.presentMode()) {
           frameBufferSize.w = width;
           frameBufferSize.h = height;
-          scaledSketch.updateSketchSize(contentScale, frameBufferSize.w, frameBufferSize.h);
+          tasks.add(() -> {
+                  scaledSketch.updateSketchSize(contentScale, frameBufferSize.w, frameBufferSize.h);
+          });
         }
         if (DEBUG_GLFW) {
           System.out.println("GLFW framebuffer size changed: " + width + " " + height);
@@ -461,7 +487,7 @@ public class PSurfaceLWJGL implements PSurface {
         windowPosSize.x = xpos;
         windowPosSize.y = ypos;
         if (external) {
-          sketch.frameMoved(xpos, ypos);
+            tasks.add(() -> sketch.frameMoved(xpos, ypos));
         }
       }));
 
@@ -490,7 +516,7 @@ public class PSurfaceLWJGL implements PSurface {
             frameBufferSize.w = w.get(0);
             frameBufferSize.h = h.get(0);
           }
-          scaledSketch.updateSketchSize(contentScale, frameBufferSize.w, frameBufferSize.h);
+          tasks.add(() -> scaledSketch.updateSketchSize(contentScale, frameBufferSize.w, frameBufferSize.h));
         }
         if (DEBUG_GLFW) {
           System.out.println("GLFW window scale changed: " + contentScale);
@@ -498,35 +524,44 @@ public class PSurfaceLWJGL implements PSurface {
       }));
 
     addWindowCallback(GLFW::glfwSetWindowCloseCallback, GLFWWindowCloseCallback
-      .create(window1 -> sketch.exit()));
+      .create(window1 -> tasks.add(() -> sketch.exit())));
 
     addWindowCallback(GLFW::glfwSetWindowFocusCallback, GLFWWindowFocusCallback
       .create((window1, focused) -> {
-        sketch.focused = focused;
-        if (focused) {
-          sketch.focusGained();
-        } else {
-          sketch.focusLost();
-        }
+          tasks.add(() -> {
+              sketch.focused = focused;
+              if (focused) {
+                  sketch.focusGained();
+              } else {
+                  sketch.focusLost();
+              }
+          });
         if (DEBUG_GLFW) {
           System.out.println("GLFW window focus changed: " + focused);
         }
+          
       }));
 
 
     addWindowCallback(GLFW::glfwSetWindowRefreshCallback, GLFWWindowRefreshCallback
       .create(window1 -> {
-        if (!sketch.isLooping()) {
-          sketch.redraw();
-        }
+          tasks.add(() -> {
+              if (!sketch.isLooping()) {
+                  sketch.redraw();
+              }
+        
+              if (sketch.frameCount > 0) {
+              // Redraw callback fires for the first time right after making the
+              // window visible. Don't redraw from here before setup() ran.
+                  handleDraw();
+              }
+          
+          });
+          
         if (DEBUG_GLFW) {
-          System.out.println("GLFW window redraw notification");
+            System.out.println("GLFW window redraw notification");
         }
-        if (sketch.frameCount > 0) {
-          // Redraw callback fires for the first time right after making the
-          // window visible. Don't redraw from here before setup() ran.
-          handleDraw();
-        }
+        
       }));
   }
 
@@ -830,6 +865,11 @@ public class PSurfaceLWJGL implements PSurface {
     if (sketch.sketchFullScreen()) {
       return;
     }
+    
+    if (!PApplet.mainThread().isMainThread()) {
+        PApplet.mainThread().runLater(() -> placeWindow(location, editorLocation));
+        return;
+    }
 
     // TODO: Guard against placing out of visible area might be needed on Windows [jv 2018-10-06]
     // TODO: Editor location might be negative if it is not on primary screen [jv 2018-10-06]
@@ -882,6 +922,11 @@ public class PSurfaceLWJGL implements PSurface {
 
   @Override
   public void placePresent(int stopColor) {
+      if (!PApplet.mainThread().isMainThread()) {
+          PApplet.mainThread().runLater(() -> placePresent(stopColor));
+          return;
+      }
+      
     int wuSketchWidth = scaledSketch.sketchToWindowUnits(sketch.sketchWidth());
     int wuSketchHeight = scaledSketch.sketchToWindowUnits(sketch.sketchHeight());
     float wuX = monitorRect.w - wuSketchWidth;
@@ -901,22 +946,35 @@ public class PSurfaceLWJGL implements PSurface {
 
   @Override
   public void setLocation(int x, int y) {
+      
     if (sketch.sketchDisplay() == PConstants.SPAN) {
       // SPAN is a borderless window and moving it causes glitches
       return;
     }
+    
+    if (!PApplet.mainThread().isMainThread()) {
+        PApplet.mainThread().runLater(() -> setLocation(x, y));
+        return;
+    }
+    
     // TODO: Guard against placing out of visible area? [jv 2018-10-06]
-    x = scaledSketch.sketchToWindowUnits(x);
-    y = scaledSketch.sketchToWindowUnits(y);
-    glfwSetWindowPos(window, x, y);
+    int sx = scaledSketch.sketchToWindowUnits(x);
+    int sy = scaledSketch.sketchToWindowUnits(y);
+    glfwSetWindowPos(window, sx, sy);
   }
 
 
   @Override
   public void setSize(int width, int height) {
-    width = scaledSketch.sketchToWindowUnits(width);
-    height = scaledSketch.sketchToWindowUnits(height);
-    glfwSetWindowSize(window, width, height);
+      
+      if (!PApplet.mainThread().isMainThread()) {
+          PApplet.mainThread().runLater(() -> setSize(width, height));
+          return;
+      }
+      
+    int sw = scaledSketch.sketchToWindowUnits(width);
+    int sy = scaledSketch.sketchToWindowUnits(height);
+    glfwSetWindowSize(window, sw, sy);
   }
 
 
@@ -943,33 +1001,41 @@ public class PSurfaceLWJGL implements PSurface {
 
   @Override
   public void setCursor(int kind) {
+      
+      if (!PApplet.mainThread().isMainThread()) {
+          PApplet.mainThread().runLater(() -> setCursor(kind));
+          return;
+      }
+      
+      int k;
+      
     switch (kind) {
     case PConstants.ARROW:
-      kind = GLFW_ARROW_CURSOR;
+      k = GLFW_ARROW_CURSOR;
       break;
     case PConstants.CROSS:
-      kind = GLFW_CROSSHAIR_CURSOR;
+      k = GLFW_CROSSHAIR_CURSOR;
       break;
     case PConstants.HAND:
-      kind = GLFW_HAND_CURSOR;
+      k = GLFW_HAND_CURSOR;
       break;
     case PConstants.TEXT:
-      kind = GLFW_IBEAM_CURSOR;
+      k = GLFW_IBEAM_CURSOR;
       break;
     case PConstants.MOVE:
       // TODO: GLFW does not have move, only horizontal or vertical resize [jv 2018-10-06]
-      kind = GLFW_HRESIZE_CURSOR;
+      k = GLFW_HRESIZE_CURSOR;
       break;
     case PConstants.WAIT:
-      kind = GLFW_ARROW_CURSOR;
+      k = GLFW_ARROW_CURSOR;
       PGraphics.showWarning("This renderer does not support WAIT cursor.");
       break;
     default:
       PGraphics.showWarning("Unknown cursor kind.");
       return;
     }
-    glfwCreateStandardCursor(kind);
-    glfwSetCursor(window, kind);
+    glfwCreateStandardCursor(k);
+    glfwSetCursor(window, k);
   }
 
 
@@ -981,12 +1047,20 @@ public class PSurfaceLWJGL implements PSurface {
 
   @Override
   public void showCursor() {
+      if (!PApplet.mainThread().isMainThread()) {
+          PApplet.mainThread().runLater(() -> showCursor());
+          return;
+      }
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
   }
 
 
   @Override
   public void hideCursor() {
+      if (!PApplet.mainThread().isMainThread()) {
+          PApplet.mainThread().runLater(() -> hideCursor());
+          return;
+      }
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
   }
 
@@ -1009,47 +1083,62 @@ public class PSurfaceLWJGL implements PSurface {
 
   @Override
   public void startThread() {
-
-    // TODO: Move OpenGL loop to another thread?
-    // Adds a lot of complexity, but does not block event queue
-
-    glfwMakeContextCurrent(window);
-
-    GL.createCapabilities();
-    pgl.setThread(Thread.currentThread());
-
-    if (DEBUG_GLFW) {
-      setupDebugOpenGLCallback();
-    }
-
-    this.threadRunning = true;
-
-    while (this.threadRunning) {
-
-      // Set the swap interval after the setup() to give the user a chance to
-      // disable V-Sync. As GLFW docs for glfwSwapInterval(int) mention,
-      // "(...) some swap interval extensions used by GLFW do not allow the swap
-      // interval to be reset to zero once it has been set to a non-zero value."
-      if (sketch.frameCount > 0 && this.swapIntervalChanged) {
-        glfwSwapInterval(this.swapInterval);
-        this.swapIntervalChanged = false;
+      if (this.threadRunning) {
+          throw new IllegalStateException();
       }
-
-      // Limit the framerate
-      Sync.sync(frameRate);
-
-      glfwPollEvents();
-
-      handleDraw();
-    }
-
-    // Need to clean up before exiting
-    // TODO: Make sure sketch does not System.exits before this could run, e.g. during noLoop()
-    glfwDestroyWindow(window);
-    glfwTerminate();
-
-    sketch.exitActual();
+      new Thread(this::handleRun).start();
   }
+  
+    private void handleRun() {
+        this.threadRunning = true;
+        
+        var sync = new Sync();
+        sync.initialise();
+
+        glfwMakeContextCurrent(window);
+
+        GL.createCapabilities();
+        pgl.setThread(Thread.currentThread());
+
+        if (DEBUG_GLFW) {
+            setupDebugOpenGLCallback();
+        }
+
+        while (this.threadRunning) {
+
+            // Set the swap interval after the setup() to give the user a chance to
+            // disable V-Sync. As GLFW docs for glfwSwapInterval(int) mention,
+            // "(...) some swap interval extensions used by GLFW do not allow the swap
+            // interval to be reset to zero once it has been set to a non-zero value."
+            if (sketch.frameCount > 0 && this.swapIntervalChanged) {
+                glfwSwapInterval(this.swapInterval);
+                this.swapIntervalChanged = false;
+            }
+
+            // Limit the framerate
+            sync.sync(frameRate);
+            
+            for (Runnable t = tasks.poll(); t != null; t = tasks.poll()) {
+                t.run();
+            }
+
+            handleDraw();
+            
+            PApplet.mainThread().runLater(GLFW::glfwPollEvents);
+            
+        }
+
+        PApplet.mainThread().runLater(() -> {
+            // Need to clean up before exiting
+            // TODO: Make sure sketch does not System.exits before this could run, e.g. during noLoop()
+            glfwDestroyWindow(window);
+            glfwTerminate();
+
+            sketch.exitActual();
+        });
+        
+        
+    }
 
 
   /**
@@ -1106,7 +1195,7 @@ public class PSurfaceLWJGL implements PSurface {
     return !threadRunning;
   }
 
-
+  
   /**
    * Helper for PApplet DPI scaling. It has methods for converting between
    * sketch units and window units, posting mouse events with scaled position,
@@ -1337,14 +1426,14 @@ public class PSurfaceLWJGL implements PSurface {
     private static final long NANOS_IN_SECOND = 1000L * 1000L * 1000L;
 
     /** The time to sleep/yield until the next frame */
-    private static long nextFrame = 0;
+    private long nextFrame = 0;
 
     /** whether the initialisation code has run */
-    private static boolean initialised = false;
+    private boolean initialised = false;
 
     /** for calculating the averages the previous sleep/yield times are stored */
-    private static RunningAvg sleepDurations = new RunningAvg(10);
-    private static RunningAvg yieldDurations = new RunningAvg(10);
+    private RunningAvg sleepDurations = new RunningAvg(10);
+    private RunningAvg yieldDurations = new RunningAvg(10);
 
 
     /**
@@ -1353,7 +1442,7 @@ public class PSurfaceLWJGL implements PSurface {
      *
      * @param fps - the desired frame rate, in frames per second
      */
-    public static void sync(float fps) {
+    public void sync(float fps) {
       if (fps <= 0) return;
       if (!initialised) initialise();
 
@@ -1394,7 +1483,7 @@ public class PSurfaceLWJGL implements PSurface {
      *
      * If running on windows it will start the sleep timer fix.
      */
-    private static void initialise() {
+    private void initialise() {
       initialised = true;
 
       sleepDurations.init(1000 * 1000);
@@ -1402,21 +1491,21 @@ public class PSurfaceLWJGL implements PSurface {
 
       nextFrame = getTime();
 
-      if (PApplet.platform == PConstants.WINDOWS) {
-        // On windows the sleep functions can be highly inaccurate by
-        // over 10ms making in unusable. However it can be forced to
-        // be a bit more accurate by running a separate sleeping daemon
-        // thread.
-        Thread timerAccuracyThread = new Thread(() -> {
-          try {
-            Thread.sleep(Long.MAX_VALUE);
-          } catch (Exception e) {}
-        });
-
-        timerAccuracyThread.setName("LWJGL Timer");
-        timerAccuracyThread.setDaemon(true);
-        timerAccuracyThread.start();
-      }
+//      if (PApplet.platform == PConstants.WINDOWS) {
+//        // On windows the sleep functions can be highly inaccurate by
+//        // over 10ms making in unusable. However it can be forced to
+//        // be a bit more accurate by running a separate sleeping daemon
+//        // thread.
+//        Thread timerAccuracyThread = new Thread(() -> {
+//          try {
+//            Thread.sleep(Long.MAX_VALUE);
+//          } catch (Exception e) {}
+//        });
+//
+//        timerAccuracyThread.setName("LWJGL Timer");
+//        timerAccuracyThread.setDaemon(true);
+//        timerAccuracyThread.start();
+//      }
     }
 
     /**
