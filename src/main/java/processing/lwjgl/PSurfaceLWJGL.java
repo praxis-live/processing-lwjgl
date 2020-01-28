@@ -51,6 +51,7 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 import static org.lwjgl.glfw.GLFW.*;
+import static org.lwjgl.opengl.GL31C.*;
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.system.MemoryUtil.NULL;
 
@@ -1104,6 +1105,9 @@ public class PSurfaceLWJGL implements PSurface {
             setupDebugOpenGLCallback();
         }
 
+        // https://stackoverflow.com/questions/35126615/is-using-a-vao-essential-in-opengl-3-1-with-forward-compatibility-flag-set
+        glBindVertexArray(glGenVertexArrays());
+        
         while (this.threadRunning) {
 
             // Set the swap interval after the setup() to give the user a chance to
@@ -1128,6 +1132,8 @@ public class PSurfaceLWJGL implements PSurface {
             
         }
 
+        glBindVertexArray(0);
+        
         PApplet.mainThread().runLater(() -> {
             // Need to clean up before exiting
             // TODO: Make sure sketch does not System.exits before this could run, e.g. during noLoop()
