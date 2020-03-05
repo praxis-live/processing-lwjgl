@@ -122,7 +122,7 @@ public class PSurfaceLWJGL implements PSurface {
    */
 
 
-  PSurfaceLWJGL(PGraphics graphics) {
+  protected PSurfaceLWJGL(PGraphics graphics) {
     this.graphics = graphics;
     this.pgl = (PLWJGL) ((PGraphicsLWJGL) graphics).pgl;
     this.tasks = new LinkedBlockingQueue<>();

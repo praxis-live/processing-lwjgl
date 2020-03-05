@@ -63,8 +63,8 @@
       <artifactId>lwjgl-stb</artifactId>
     </dependency>
     
-    <dependency>
-      <groupId>org.lwjgl</groupId>
+<!--    <dependency>
+     <groupId>org.lwjgl</groupId>
       <artifactId>lwjgl</artifactId>
       <classifier>natives-linux</classifier>
     </dependency>
@@ -154,7 +154,7 @@
       <groupId>org.lwjgl</groupId>
       <artifactId>lwjgl-stb</artifactId>
       <classifier>natives-windows</classifier>
-    </dependency>
+    </dependency>-->
     
   </dependencies>
   
