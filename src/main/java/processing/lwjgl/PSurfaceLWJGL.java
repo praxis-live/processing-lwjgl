@@ -122,9 +122,15 @@ public class PSurfaceLWJGL implements PSurface {
    */
 
 
-  protected PSurfaceLWJGL(PGraphics graphics) {
+  protected PSurfaceLWJGL(PGraphicsLWJGL2D graphics) {
     this.graphics = graphics;
-    this.pgl = (PLWJGL) ((PGraphicsLWJGL) graphics).pgl;
+    this.pgl = (PLWJGL) graphics.pgl;
+    this.tasks = new LinkedBlockingQueue<>();
+  }
+  
+  protected PSurfaceLWJGL(PGraphicsLWJGL3D graphics) {
+    this.graphics = graphics;
+    this.pgl = (PLWJGL) graphics.pgl;
     this.tasks = new LinkedBlockingQueue<>();
   }
 
@@ -427,7 +433,7 @@ public class PSurfaceLWJGL implements PSurface {
         }
       }
 
-      this.scaledSketch = new ScaledSketch(sketch, graphics, contentScale);
+      this.scaledSketch = new ScaledSketch(sketch, graphics, pgl, contentScale);
 
       if (!sketch.sketchFullScreen() && sketch.sketchDisplay() != PConstants.SPAN) {
         int windowWidth = scaledSketch.sketchToWindowUnits(sketch.sketchWidth());
@@ -1235,10 +1241,10 @@ public class PSurfaceLWJGL implements PSurface {
      */
     private float windowUnitsToPixelsFactor;
 
-    ScaledSketch(PApplet sketch, PGraphics graphics, float contentScale) {
+    ScaledSketch(PApplet sketch, PGraphics graphics, PLWJGL pgl, float contentScale) {
       this.sketch = sketch;
       this.graphics = graphics;
-      this.pgl = ((PGraphicsLWJGL) graphics).pgl;
+      this.pgl = pgl;
 
       // If this is 2, user is aware that the sketch size might not be equal to
       // the pixel size.

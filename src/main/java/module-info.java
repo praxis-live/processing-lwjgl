@@ -5,7 +5,6 @@ module org.praxislive.processing.lwjgl {
     
     requires org.praxislive.processing.core;
     requires org.lwjgl;
-    requires org.lwjgl.egl;
     requires org.lwjgl.glfw;
     requires org.lwjgl.opengl;
     requires org.lwjgl.stb;
